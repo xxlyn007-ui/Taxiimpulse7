@@ -16,25 +16,62 @@ import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-cont
 import { Audio } from "expo-av";
 import * as Notifications from "expo-notifications";
 import * as TaskManager from "expo-task-manager";
+import * as BackgroundFetch from "expo-background-fetch";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { WebViewNavigation } from "react-native-webview";
 
 const SITE_URL = "https://taxiimpulse.ru";
-const BACKGROUND_NOTIFICATION_TASK = "BACKGROUND_NOTIFICATION_TASK";
+const API_BASE = "https://taxiimpulse.ru/api";
+const TOKEN_KEY = "taxi_auth_token";
+const BG_FETCH_TASK = "TAXI_BG_POLL";
+const BG_NOTIFICATION_TASK = "BACKGROUND_NOTIFICATION_TASK";
 
-TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, ({ data, error }: any) => {
-  if (error) return;
-  if (data?.notification) {
-    const { title, body } = data.notification;
-    Notifications.scheduleNotificationAsync({
-      content: {
-        title: title || "Taxi Impulse",
-        body: body || "",
-        sound: "notification.mp3",
-        priority: Notifications.AndroidNotificationPriority.HIGH,
-      },
-      trigger: null,
-    }).catch(() => {});
+// ── Фоновый опрос (работает даже когда приложение закрыто) ─────────────────
+TaskManager.defineTask(BG_FETCH_TASK, async () => {
+  try {
+    const token = await AsyncStorage.getItem(TOKEN_KEY);
+    if (!token) return BackgroundFetch.BackgroundFetchResult.NoData;
+
+    const resp = await fetch(`${API_BASE}/push/poll`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) return BackgroundFetch.BackgroundFetchResult.Failed;
+
+    const data = await resp.json();
+    if (!data?.notifications?.length) return BackgroundFetch.BackgroundFetchResult.NoData;
+
+    for (const n of data.notifications) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: n.title || "Taxi Impulse",
+          body: n.body || "",
+          sound: "notification.mp3",
+          priority: Notifications.AndroidNotificationPriority.HIGH,
+          data: { fromBackground: true },
+        },
+        trigger: null,
+      });
+    }
+    return BackgroundFetch.BackgroundFetchResult.NewData;
+  } catch {
+    return BackgroundFetch.BackgroundFetchResult.Failed;
   }
+});
+
+// ── FCM фоновый обработчик ──────────────────────────────────────────────────
+TaskManager.defineTask(BG_NOTIFICATION_TASK, ({ data, error }: any) => {
+  if (error || !data?.notification) return;
+  const { title, body } = data.notification;
+  Notifications.scheduleNotificationAsync({
+    content: {
+      title: title || "Taxi Impulse",
+      body: body || "",
+      sound: "notification.mp3",
+      priority: Notifications.AndroidNotificationPriority.HIGH,
+    },
+    trigger: null,
+  }).catch(() => {});
 });
 
 Notifications.setNotificationHandler({
@@ -47,6 +84,25 @@ Notifications.setNotificationHandler({
   }),
 });
 
+async function registerBackgroundFetch() {
+  try {
+    const status = await BackgroundFetch.getStatusAsync();
+    if (
+      status === BackgroundFetch.BackgroundFetchStatus.Restricted ||
+      status === BackgroundFetch.BackgroundFetchStatus.Denied
+    ) return;
+
+    const isRegistered = await TaskManager.isTaskRegisteredAsync(BG_FETCH_TASK);
+    if (!isRegistered) {
+      await BackgroundFetch.registerTaskAsync(BG_FETCH_TASK, {
+        minimumInterval: 60 * 15,
+        stopOnTerminate: false,
+        startOnBoot: true,
+      });
+    }
+  } catch {}
+}
+
 async function playNotificationSound() {
   try {
     await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
@@ -57,7 +113,7 @@ async function playNotificationSound() {
     sound.setOnPlaybackStatusUpdate((s) => {
       if (s.isLoaded && s.didJustFinish) sound.unloadAsync().catch(() => {});
     });
-  } catch (e) {}
+  } catch {}
 }
 
 function buildInjectedJS(fcmToken: string | null) {
@@ -79,12 +135,25 @@ function buildInjectedJS(fcmToken: string | null) {
     NativeNotification.permission = 'granted';
     try { window.Notification = NativeNotification; } catch(e) {}
 
+    var lastSentToken = null;
+    function syncToken() {
+      var t = localStorage.getItem('taxi_token');
+      if (t && t !== lastSentToken) {
+        lastSentToken = t;
+        try {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'SAVE_TOKEN', token: t })
+          );
+        } catch(e) {}
+      }
+    }
+
     function registerFcmWithServer() {
       var fcmToken = window.__TAXI_FCM_TOKEN__;
       if (!fcmToken) return;
       var authToken = localStorage.getItem('taxi_token');
       if (!authToken) return;
-      fetch('https://taxiimpulse.ru/api/push/fcm-token', {
+      fetch('${API_BASE}/push/fcm-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
         body: JSON.stringify({ fcmToken: fcmToken })
@@ -101,7 +170,7 @@ function buildInjectedJS(fcmToken: string | null) {
         } catch(e) {}
         return;
       }
-      fetch('https://taxiimpulse.ru/api/push/poll', {
+      fetch('${API_BASE}/push/poll', {
         headers: { 'Authorization': 'Bearer ' + authToken }
       }).then(function(r) {
         return r.ok ? r.json() : { error: 'http_' + r.status };
@@ -122,15 +191,19 @@ function buildInjectedJS(fcmToken: string | null) {
       }).catch(function(err) {
         try {
           window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-            JSON.stringify({ type: 'POLL_STATUS', status: 'network_error', error: String(err) })
+            JSON.stringify({ type: 'POLL_STATUS', status: 'network_error' })
           );
         } catch(e) {}
       });
     }
 
     function startPolling() {
+      syncToken();
       pollNotifications();
-      setInterval(pollNotifications, 20000);
+      setInterval(function() {
+        syncToken();
+        pollNotifications();
+      }, 20000);
     }
 
     function tryInit() {
@@ -145,16 +218,14 @@ function buildInjectedJS(fcmToken: string | null) {
       window.addEventListener('load', tryInit);
     }
 
-    window.addEventListener('taxi-user-login', function() {
-      setTimeout(registerFcmWithServer, 1000);
-      setTimeout(pollNotifications, 500);
+    window.addEventListener('storage', function(e) {
+      if (e.key === 'taxi_token') { syncToken(); setTimeout(pollNotifications, 500); }
     });
   })();
   true;
 `;
 }
 
-// Внутренний банер уведомления (виден даже без разрешений Android)
 function InAppBanner({ title, body, onDismiss }: { title: string; body: string; onDismiss: () => void }) {
   const translateY = useRef(new Animated.Value(-120)).current;
 
@@ -187,16 +258,14 @@ function WebViewScreen() {
   const [canGoBack, setCanGoBack] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const appStateRef = useRef(AppState.currentState);
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLoadedOnce = useRef(false);
   const [fcmToken, setFcmToken] = useState<string | null>(null);
   const injectedJS = buildInjectedJS(fcmToken);
 
-  // Очередь in-app баннеров
   const [banners, setBanners] = useState<Array<{ id: number; title: string; body: string }>>([]);
   const bannerIdRef = useRef(0);
-  const [pollStatus, setPollStatus] = useState<{ status: string; count?: number; error?: string } | null>(null);
+  const [pollStatus, setPollStatus] = useState<{ status: string } | null>(null);
 
   const showBanner = useCallback((title: string, body: string) => {
     const id = ++bannerIdRef.current;
@@ -204,70 +273,70 @@ function WebViewScreen() {
   }, []);
 
   useEffect(() => {
-    const requestPerms = async () => {
+    const setup = async () => {
       try {
         const { status } = await Notifications.requestPermissionsAsync();
-        if (status !== "granted") {
-          console.warn("[TAXI] Notification permission denied");
-        }
+        if (status !== "granted") console.warn("[TAXI] Notifications blocked");
       } catch {}
-    };
-    requestPerms();
 
-    if (Platform.OS === "android") {
-      Notifications.setNotificationChannelAsync("taxi-impulse", {
-        name: "Taxi Impulse",
-        importance: Notifications.AndroidImportance.HIGH,
-        sound: "notification.mp3",
-        vibrationPattern: [0, 250, 250, 250],
-        enableVibrate: true,
-        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-        bypassDnd: false,
-      }).catch(() => {});
-    }
+      if (Platform.OS === "android") {
+        Notifications.setNotificationChannelAsync("taxi-impulse", {
+          name: "Taxi Impulse",
+          importance: Notifications.AndroidImportance.HIGH,
+          sound: "notification.mp3",
+          vibrationPattern: [0, 250, 250, 250],
+          enableVibrate: true,
+          lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+          bypassDnd: false,
+        }).catch(() => {});
+      }
 
-    const registerPushToken = async () => {
       try {
         const tokenData = await Notifications.getDevicePushTokenAsync();
         if (tokenData?.data) setFcmToken(tokenData.data);
       } catch {}
+
+      Notifications.registerTaskAsync(BG_NOTIFICATION_TASK).catch(() => {});
+      await registerBackgroundFetch();
     };
-    registerPushToken();
 
-    Notifications.registerTaskAsync(BACKGROUND_NOTIFICATION_TASK).catch(() => {});
+    setup();
 
-    const sub = AppState.addEventListener("change", (s) => { appStateRef.current = s; });
-    return () => sub.remove();
+    const appSub = AppState.addEventListener("change", (s) => {
+      if (s === "active") {
+        webviewRef.current?.injectJavaScript(`
+          try {
+            var t = localStorage.getItem('taxi_token');
+            if (t) window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SAVE_TOKEN', token: t }));
+          } catch(e) {}
+          true;
+        `);
+      }
+    });
+
+    return () => appSub.remove();
   }, []);
-
-  const fcmRegisteredRef = useRef(false);
-  useEffect(() => {
-    if (fcmToken && !fcmRegisteredRef.current && hasLoadedOnce.current) {
-      fcmRegisteredRef.current = true;
-      webviewRef.current?.injectJavaScript(`
-        window.__TAXI_FCM_TOKEN__ = ${JSON.stringify(fcmToken)};
-        try {
-          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-            JSON.stringify({ type: 'FCM_TOKEN_READY', token: ${JSON.stringify(fcmToken)} })
-          );
-        } catch(e) {}
-        true;
-      `);
-    }
-  }, [fcmToken]);
 
   const handleMessage = useCallback(async (event: { nativeEvent: { data: string } }) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
 
+      if (msg.type === "SAVE_TOKEN" && msg.token) {
+        await AsyncStorage.setItem(TOKEN_KEY, msg.token);
+        return;
+      }
+
+      if (msg.type === "POLL_STATUS") {
+        setPollStatus({ status: msg.status });
+        return;
+      }
+
       if (msg.type === "NOTIFICATION") {
         const title = msg.title || "Taxi Impulse";
         const body = msg.body || "";
 
-        // 1. Звук
         playNotificationSound();
 
-        // 2. Системное уведомление Android
         try {
           await Notifications.scheduleNotificationAsync({
             content: {
@@ -280,28 +349,10 @@ function WebViewScreen() {
           });
         } catch {}
 
-        // 3. In-app банер (всегда видно, даже если разрешения нет)
         showBanner(title, body);
       }
-
-      if (msg.type === "POLL_STATUS") {
-        setPollStatus({ status: msg.status, count: msg.count, error: msg.error });
-        return;
-      }
-
-      if (msg.type === "USER_LOGGED_IN" && fcmToken) {
-        webviewRef.current?.injectJavaScript(`
-          window.__TAXI_FCM_TOKEN__ = ${JSON.stringify(fcmToken)};
-          try {
-            window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-              JSON.stringify({ type: 'FCM_TOKEN_READY', token: ${JSON.stringify(fcmToken)} })
-            );
-          } catch(e) {}
-          true;
-        `);
-      }
     } catch {}
-  }, [fcmToken, showBanner]);
+  }, [showBanner]);
 
   const handleBack = useCallback(() => {
     if (canGoBack) { webviewRef.current?.goBack(); return true; }
@@ -396,26 +447,26 @@ function WebViewScreen() {
         onContentProcessDidTerminate={() => webviewRef.current?.reload()}
       />
 
-      {/* Статус polling (диагностика) */}
       {pollStatus && (
         <View style={[styles.pollIndicator, {
-          backgroundColor: pollStatus.status === 'ok' ? 'rgba(34,197,94,0.15)' :
-                           pollStatus.status === 'no_token' ? 'rgba(251,191,36,0.15)' :
-                           'rgba(239,68,68,0.15)',
+          backgroundColor: pollStatus.status === "ok"
+            ? "rgba(34,197,94,0.15)"
+            : pollStatus.status === "no_token"
+            ? "rgba(251,191,36,0.15)"
+            : "rgba(239,68,68,0.15)",
         }]}>
           <Text style={[styles.pollIndicatorText, {
-            color: pollStatus.status === 'ok' ? '#86efac' :
-                   pollStatus.status === 'no_token' ? '#fde68a' : '#fca5a5',
+            color: pollStatus.status === "ok" ? "#86efac"
+              : pollStatus.status === "no_token" ? "#fde68a" : "#fca5a5",
           }]}>
-            {pollStatus.status === 'ok' ? `✓ Polling активен` :
-             pollStatus.status === 'no_auth' ? '✗ Нет авторизации (войдите в аккаунт)' :
-             pollStatus.status === 'no_token' ? '⚠ Войдите в аккаунт для уведомлений' :
-             `✗ Ошибка: ${pollStatus.status}`}
+            {pollStatus.status === "ok" ? "✓ Уведомления активны (онлайн)"
+              : pollStatus.status === "no_auth" ? "✗ Войдите в аккаунт"
+              : pollStatus.status === "no_token" ? "⚠ Войдите для получения уведомлений"
+              : "✗ Ошибка соединения"}
           </Text>
         </View>
       )}
 
-      {/* In-app баннеры уведомлений */}
       {banners.map((b) => (
         <InAppBanner
           key={b.id}
