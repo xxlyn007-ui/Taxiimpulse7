@@ -70,6 +70,7 @@ function WebViewScreen() {
   const [error, setError] = useState(false);
   const appStateRef = useRef(AppState.currentState);
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasLoadedOnce = useRef(false);
 
   useEffect(() => {
     Notifications.requestPermissionsAsync().catch(() => {});
@@ -150,17 +151,22 @@ function WebViewScreen() {
         mediaPlaybackRequiresUserAction={false}
         onNavigationStateChange={(nav: WebViewNavigation) => setCanGoBack(nav.canGoBack)}
         onLoadStart={() => {
-          setLoading(true);
-          setError(false);
-          if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-          loadingTimerRef.current = setTimeout(() => {
-            setLoading(false);
-            setError(true);
-          }, 20000);
+          if (!hasLoadedOnce.current) {
+            setLoading(true);
+            setError(false);
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            loadingTimerRef.current = setTimeout(() => {
+              setLoading(false);
+              setError(true);
+            }, 25000);
+          }
         }}
         onLoadEnd={() => {
-          if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
-          setLoading(false);
+          if (!hasLoadedOnce.current) {
+            hasLoadedOnce.current = true;
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            setLoading(false);
+          }
         }}
         onError={() => {
           if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
