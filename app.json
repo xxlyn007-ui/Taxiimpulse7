@@ -18,7 +18,8 @@
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
-        }
+        },
+        "UIBackgroundModes": ["fetch", "remote-notification"]
       }
     },
     "android": {
@@ -32,9 +33,12 @@
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.VIBRATE",
         "android.permission.POST_NOTIFICATIONS",
-        "android.permission.RECEIVE_BOOT_COMPLETED"
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.WAKE_LOCK"
       ],
-      "allowBackup": false
+      "allowBackup": false,
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/images/icon.png"
@@ -46,9 +50,18 @@
         {
           "icon": "./assets/images/icon.png",
           "color": "#7c3aed",
-          "sounds": ["./assets/notification.mp3"]
+          "sounds": ["./assets/notification.mp3"],
+          "mode": "production"
         }
+      ],
+      [
+        "expo-task-manager"
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "taxi-impulse-app"
+      }
+    }
   }
 }
