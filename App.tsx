@@ -69,6 +69,7 @@ function WebViewScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const appStateRef = useRef(AppState.currentState);
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     Notifications.requestPermissionsAsync().catch(() => {});
@@ -148,16 +149,39 @@ function WebViewScreen() {
         allowsInlineMediaPlayback
         mediaPlaybackRequiresUserAction={false}
         onNavigationStateChange={(nav: WebViewNavigation) => setCanGoBack(nav.canGoBack)}
-        onLoadStart={() => { setLoading(true); setError(false); }}
-        onLoadEnd={() => setLoading(false)}
-        onError={() => { setLoading(false); setError(true); }}
-        onHttpError={(e) => { if (e.nativeEvent.statusCode >= 500) { setError(true); setLoading(false); } }}
+        onLoadStart={() => {
+          setLoading(true);
+          setError(false);
+          if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+          loadingTimerRef.current = setTimeout(() => {
+            setLoading(false);
+            setError(true);
+          }, 20000);
+        }}
+        onLoadEnd={() => {
+          if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+          setLoading(false);
+        }}
+        onError={() => {
+          if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+          setLoading(false);
+          setError(true);
+        }}
+        onHttpError={(e) => {
+          if (e.nativeEvent.statusCode >= 500) {
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+            setError(true);
+            setLoading(false);
+          }
+        }}
         onMessage={handleMessage}
-        userAgent={`TaxiImpulseApp/1.0 (${Platform.OS})`}
+        userAgent="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         sharedCookiesEnabled
         thirdPartyCookiesEnabled
         cacheEnabled
+        mixedContentMode="always"
         originWhitelist={["*"]}
+        setSupportMultipleWindows={false}
         onContentProcessDidTerminate={() => webviewRef.current?.reload()}
       />
     </View>
