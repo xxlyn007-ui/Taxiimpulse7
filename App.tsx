@@ -80,39 +80,61 @@ function buildInjectedJS(fcmToken: string | null) {
     NativeNotification.permission = 'granted';
     try { window.Notification = NativeNotification; } catch(e) {}
 
-    // Register FCM token directly with server using localStorage auth
+    // Register FCM token with server
     function registerFcmWithServer() {
       var fcmToken = window.__TAXI_FCM_TOKEN__;
       if (!fcmToken) return;
-      try {
-        var authToken = localStorage.getItem('taxi_token');
-        if (!authToken) return;
-        fetch('https://taxiimpulse.ru/api/push/fcm-token', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + authToken
-          },
-          body: JSON.stringify({ fcmToken: fcmToken })
-        }).catch(function() {});
-      } catch(e) {}
+      var authToken = localStorage.getItem('taxi_token');
+      if (!authToken) return;
+      fetch('https://taxiimpulse.ru/api/push/fcm-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken },
+        body: JSON.stringify({ fcmToken: fcmToken })
+      }).catch(function() {});
     }
 
-    // Try registering after page load and on every localStorage auth change
-    function tryRegister() {
-      setTimeout(registerFcmWithServer, 3000);
-      setTimeout(registerFcmWithServer, 8000);
+    // ====== POLLING — запрашиваем уведомления с сервера каждые 20 секунд ======
+    var _pollLastTime = Date.now();
+    function pollNotifications() {
+      var authToken = localStorage.getItem('taxi_token');
+      if (!authToken) return;
+      fetch('https://taxiimpulse.ru/api/push/poll', {
+        headers: { 'Authorization': 'Bearer ' + authToken }
+      }).then(function(r) {
+        return r.ok ? r.json() : null;
+      }).then(function(data) {
+        if (!data || !data.notifications || !data.notifications.length) return;
+        data.notifications.forEach(function(n) {
+          try {
+            window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+              JSON.stringify({ type: 'NOTIFICATION', title: n.title, body: n.body })
+            );
+          } catch(e) {}
+        });
+      }).catch(function() {});
+    }
+
+    // Запуск polling
+    function startPolling() {
+      pollNotifications();
+      setInterval(pollNotifications, 20000);
+    }
+
+    function tryInit() {
+      setTimeout(registerFcmWithServer, 2000);
+      setTimeout(registerFcmWithServer, 7000);
+      setTimeout(startPolling, 3000);
     }
 
     if (document.readyState === 'complete') {
-      tryRegister();
+      tryInit();
     } else {
-      window.addEventListener('load', tryRegister);
+      window.addEventListener('load', tryInit);
     }
 
-    // Also listen for auth events triggered by the website
     window.addEventListener('taxi-user-login', function() {
       setTimeout(registerFcmWithServer, 1000);
+      setTimeout(pollNotifications, 500);
     });
   })();
   true;
