@@ -1,0 +1,7 @@
+node_modules/
+.expo/
+*.log
+*.bak
+package.json.bak
+package.standalone.json
+termux-build.sh
