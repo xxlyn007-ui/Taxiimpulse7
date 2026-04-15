@@ -93,12 +93,24 @@ function buildInjectedJS(fcmToken: string | null) {
 
     function pollNotifications() {
       var authToken = localStorage.getItem('taxi_token');
-      if (!authToken) return;
+      if (!authToken) {
+        try {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'POLL_STATUS', status: 'no_token' })
+          );
+        } catch(e) {}
+        return;
+      }
       fetch('https://taxiimpulse.ru/api/push/poll', {
         headers: { 'Authorization': 'Bearer ' + authToken }
       }).then(function(r) {
-        return r.ok ? r.json() : null;
+        return r.ok ? r.json() : { error: 'http_' + r.status };
       }).then(function(data) {
+        try {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'POLL_STATUS', status: data.debug || 'ok', count: (data.notifications || []).length })
+          );
+        } catch(e) {}
         if (!data || !data.notifications || !data.notifications.length) return;
         data.notifications.forEach(function(n) {
           try {
@@ -107,7 +119,13 @@ function buildInjectedJS(fcmToken: string | null) {
             );
           } catch(e) {}
         });
-      }).catch(function() {});
+      }).catch(function(err) {
+        try {
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+            JSON.stringify({ type: 'POLL_STATUS', status: 'network_error', error: String(err) })
+          );
+        } catch(e) {}
+      });
     }
 
     function startPolling() {
@@ -178,6 +196,7 @@ function WebViewScreen() {
   // Очередь in-app баннеров
   const [banners, setBanners] = useState<Array<{ id: number; title: string; body: string }>>([]);
   const bannerIdRef = useRef(0);
+  const [pollStatus, setPollStatus] = useState<{ status: string; count?: number; error?: string } | null>(null);
 
   const showBanner = useCallback((title: string, body: string) => {
     const id = ++bannerIdRef.current;
@@ -263,6 +282,11 @@ function WebViewScreen() {
 
         // 3. In-app банер (всегда видно, даже если разрешения нет)
         showBanner(title, body);
+      }
+
+      if (msg.type === "POLL_STATUS") {
+        setPollStatus({ status: msg.status, count: msg.count, error: msg.error });
+        return;
       }
 
       if (msg.type === "USER_LOGGED_IN" && fcmToken) {
@@ -372,6 +396,25 @@ function WebViewScreen() {
         onContentProcessDidTerminate={() => webviewRef.current?.reload()}
       />
 
+      {/* Статус polling (диагностика) */}
+      {pollStatus && (
+        <View style={[styles.pollIndicator, {
+          backgroundColor: pollStatus.status === 'ok' ? 'rgba(34,197,94,0.15)' :
+                           pollStatus.status === 'no_token' ? 'rgba(251,191,36,0.15)' :
+                           'rgba(239,68,68,0.15)',
+        }]}>
+          <Text style={[styles.pollIndicatorText, {
+            color: pollStatus.status === 'ok' ? '#86efac' :
+                   pollStatus.status === 'no_token' ? '#fde68a' : '#fca5a5',
+          }]}>
+            {pollStatus.status === 'ok' ? `✓ Polling активен` :
+             pollStatus.status === 'no_auth' ? '✗ Нет авторизации (войдите в аккаунт)' :
+             pollStatus.status === 'no_token' ? '⚠ Войдите в аккаунт для уведомлений' :
+             `✗ Ошибка: ${pollStatus.status}`}
+          </Text>
+        </View>
+      )}
+
       {/* In-app баннеры уведомлений */}
       {banners.map((b) => (
         <InAppBanner
@@ -442,4 +485,15 @@ const styles = StyleSheet.create({
   bannerBody: { color: "rgba(255,255,255,0.8)", fontSize: 13 },
   bannerClose: { paddingLeft: 12, paddingVertical: 4 },
   bannerCloseText: { color: "rgba(255,255,255,0.5)", fontSize: 18 },
+  pollIndicator: {
+    position: "absolute",
+    bottom: 4,
+    left: 8,
+    right: 8,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    zIndex: 50,
+  },
+  pollIndicatorText: { fontSize: 11, textAlign: "center" },
 });
