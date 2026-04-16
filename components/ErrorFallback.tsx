@@ -1,5 +1,3 @@
-import { Feather } from "@expo/vector-icons";
-import { reloadAppAsync } from "expo";
 import React, { useState } from "react";
 import {
   Modal,
@@ -27,9 +25,8 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
 
   const handleRestart = async () => {
     try {
-      await reloadAppAsync();
-    } catch (restartError) {
-      console.error("Failed to restart app:", restartError);
+      resetError();
+    } catch {
       resetError();
     }
   };
@@ -64,7 +61,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
             },
           ]}
         >
-          <Feather name="alert-circle" size={20} color={colors.foreground} />
+          <Text style={[styles.iconText, { color: colors.foreground }]}>⚠</Text>
         </Pressable>
       ) : null}
 
@@ -131,7 +128,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                     { opacity: pressed ? 0.6 : 1 },
                   ]}
                 >
-                  <Feather name="x" size={24} color={colors.foreground} />
+                  <Text style={[styles.closeIcon, { color: colors.foreground }]}>✕</Text>
                 </Pressable>
               </View>
 
@@ -208,6 +205,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     zIndex: 10,
+  },
+  iconText: {
+    fontSize: 20,
+  },
+  closeIcon: {
+    fontSize: 22,
+    lineHeight: 24,
   },
   button: {
     paddingVertical: 16,
