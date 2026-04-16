@@ -304,9 +304,12 @@ function WebViewScreen() {
     setup();
   }, []);
 
-  // Inject FCM token into WebView without reloading the page
+  // FIX #7 — inject FCM token only after page has loaded; also re-inject on each page load
+  const fcmTokenRef = useRef<string | null>(null);
   useEffect(() => {
-    if (fcmToken) {
+    fcmTokenRef.current = fcmToken;
+    // Only inject if page is already loaded; if not, onLoadEnd will inject it
+    if (fcmToken && hasLoadedOnce.current) {
       const script = `try { window.__TAXI_FCM_TOKEN__ = ${JSON.stringify(fcmToken)}; } catch(e) {} true;`;
       webviewRef.current?.injectJavaScript(script);
     }
@@ -433,6 +436,11 @@ function WebViewScreen() {
             hasLoadedOnce.current = true;
             if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
             setLoading(false);
+          }
+          // Re-inject FCM token on every page load (navigation, refresh)
+          if (fcmTokenRef.current) {
+            const script = `try { window.__TAXI_FCM_TOKEN__ = ${JSON.stringify(fcmTokenRef.current)}; } catch(e) {} true;`;
+            webviewRef.current?.injectJavaScript(script);
           }
         }}
         onError={() => {
