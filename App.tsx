@@ -261,7 +261,8 @@ function WebViewScreen() {
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasLoadedOnce = useRef(false);
   const [fcmToken, setFcmToken] = useState<string | null>(null);
-  const injectedJS = buildInjectedJS(fcmToken);
+  // Stable ref — buildInjectedJS runs once to avoid WebView reload on token change
+  const injectedJSRef = useRef(buildInjectedJS(null));
 
   const [banners, setBanners] = useState<Array<{ id: number; title: string; body: string }>>([]);
   const bannerIdRef = useRef(0);
@@ -301,7 +302,17 @@ function WebViewScreen() {
     };
 
     setup();
+  }, []);
 
+  // Inject FCM token into WebView without reloading the page
+  useEffect(() => {
+    if (fcmToken) {
+      const script = `try { window.__TAXI_FCM_TOKEN__ = ${JSON.stringify(fcmToken)}; } catch(e) {} true;`;
+      webviewRef.current?.injectJavaScript(script);
+    }
+  }, [fcmToken]);
+
+  useEffect(() => {
     const appSub = AppState.addEventListener("change", (s) => {
       if (s === "active") {
         webviewRef.current?.injectJavaScript(`
@@ -399,7 +410,7 @@ function WebViewScreen() {
         ref={webviewRef}
         source={{ uri: SITE_URL }}
         style={[styles.webview, error && styles.hidden]}
-        injectedJavaScript={injectedJS}
+        injectedJavaScript={injectedJSRef.current}
         javaScriptEnabled
         domStorageEnabled
         allowsBackForwardNavigationGestures
